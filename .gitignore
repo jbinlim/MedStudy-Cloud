@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+cloud/.streamlit/secrets.toml
+.venv/
+data/
+ocr_data/
+output/
+tmp/
+dist/
+*.db
+*.db-*
+*.db.backup-*
+*.log
+*.pid
+.DS_Store
