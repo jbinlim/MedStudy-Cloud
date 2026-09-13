@@ -9,9 +9,13 @@ create table if not exists public.medstudy_lectures (
   lecture_no integer not null,
   title text not null default '',
   summary_pdf_path text,
+  exam_pdf_path text,
   summary_updated_at timestamptz,
   unique(subject_id, lecture_no)
 );
+
+-- 기존에 만든 테이블에는 이 컬럼을 추가로 실행하세요:
+-- alter table public.medstudy_lectures add column if not exists exam_pdf_path text;
 
 create table if not exists public.medstudy_quiz_sets (
   lecture_id bigint not null references public.medstudy_lectures(id) on delete cascade,

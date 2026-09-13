@@ -2,6 +2,94 @@ import hashlib
 import re
 
 
+SUPERSCRIPT_MAP = str.maketrans({
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    "+": "⁺", "-": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
+})
+SUBSCRIPT_MAP = str.maketrans({
+    "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄",
+    "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+    "+": "₊", "-": "₋", "=": "₌", "(": "₍", ")": "₎",
+    "a": "ₐ", "e": "ₑ", "o": "ₒ", "x": "ₓ", "h": "ₕ",
+    "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ", "p": "ₚ",
+    "s": "ₛ", "t": "ₜ",
+})
+LATEX_MATH_DELIMITER = re.compile(r"\\[()\[\]]|\$\$?")
+# 중괄호로 감싼 형태(`^{-4}`, `_{a}`)만 다룬다. `_x`, `^2`처럼 중괄호
+# 없는 한 글자짜리 표기까지 다루면, `EXAM_FIGURE`처럼 그냥 밑줄이 들어간
+# 일반 텍스트나 식별자까지 아래첨자로 오인해 밑줄 뒤 글자만 남기고
+# 지워버린다(예: "EXAM_FIGURE" -> "EXAMFIGURE"). 중괄호 형태는 진짜
+# LaTeX가 아니면 거의 나타나지 않아 안전하다.
+LATEX_SUPERSCRIPT = re.compile(r"\^\{([^{}]*)\}")
+LATEX_SUBSCRIPT = re.compile(r"_\{([^{}]*)\}")
+LATEX_FRAC = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
+LATEX_WRAPPER = re.compile(r"\\(?:mathrm|mathbf|mathit|text)\{([^{}]*)\}")
+LATEX_SYMBOL_MAP = {
+    r"\times": "×",
+    r"\cdot": "·",
+    r"\pm": "±",
+    r"\mp": "∓",
+    r"\leq": "≤",
+    r"\geq": "≥",
+    r"\neq": "≠",
+    r"\approx": "≈",
+    r"\infty": "∞",
+    r"\rightleftharpoons": "⇌",
+    r"\rightarrow": "→",
+    r"\to": "→",
+    r"\,": " ",
+    r"\;": " ",
+    r"\ ": " ",
+    r"\log": "log",
+    r"\ln": "ln",
+    r"\sin": "sin",
+    r"\cos": "cos",
+    r"\tan": "tan",
+    r"\sqrt": "√",
+    r"\alpha": "α",
+    r"\beta": "β",
+    r"\gamma": "γ",
+    r"\Delta": "Δ",
+    r"\mu": "μ",
+    # 크기만 조절하는 `\left`/`\right`는 뒤에 오는 진짜 괄호 문자만 남기면
+    # 되므로, 더 구체적인 명령(`\rightarrow` 등)을 먼저 치환한 뒤 마지막에
+    # 지운다. 순서를 바꾸면 `\rightarrow`의 `\right` 부분까지 먼저
+    # 지워져 "arrow"라는 글자만 남는 식으로 망가진다.
+    r"\left": "",
+    r"\right": "",
+}
+
+
+def delatexify(text):
+    """AI가 가끔 섞어 쓰는 LaTeX 표기를 일반 텍스트로 바꾼다.
+
+    Streamlit(및 클라우드 학습 앱)의 Markdown 렌더러는 `\\(...\\)`,
+    `\\[...\\]` 같은 LaTeX 수식 구분자를 수식으로 인식하지 못한다. 오히려
+    일반 Markdown 이스케이프 규칙 때문에 `\\(`의 백슬래시만 사라지고
+    `\\times`, `\\mathrm{...}` 같은 명령어는 글자 그대로 남아 화면에
+    깨진 채로 보인다. 화학·물리 문제에 흔한 표기(지수, 아래첨자, ×, 분수,
+    로그 등)만 다루는 실용적인 변환이며, 완전한 LaTeX 파서는 아니다.
+    """
+    if not text or "\\" not in text and "^" not in text and "_" not in text:
+        return text
+
+    result = LATEX_FRAC.sub(lambda m: f"{m.group(1)}/{m.group(2)}", text)
+    result = LATEX_WRAPPER.sub(lambda m: m.group(1), result)
+
+    for command, symbol in LATEX_SYMBOL_MAP.items():
+        result = result.replace(command, symbol)
+
+    result = LATEX_SUPERSCRIPT.sub(
+        lambda m: m.group(1).translate(SUPERSCRIPT_MAP), result
+    )
+    result = LATEX_SUBSCRIPT.sub(
+        lambda m: m.group(1).translate(SUBSCRIPT_MAP), result
+    )
+    result = LATEX_MATH_DELIMITER.sub("", result)
+    return result
+
+
 SECTION_HEADING_PATTERN = re.compile(
     r"^#{1,6}\s*6[.\s]+시험\s*직전\s*체크리스트\s*$",
     re.MULTILINE,

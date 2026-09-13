@@ -19,7 +19,10 @@ class CloudStudyRepository:
     def lectures(self, subject_id):
         return (
             self.client.table("medstudy_lectures")
-            .select("id,subject_id,lecture_no,title,summary_pdf_path,summary_updated_at")
+            .select(
+                "id,subject_id,lecture_no,title,summary_pdf_path,"
+                "exam_pdf_path,summary_updated_at"
+            )
             .eq("subject_id", subject_id)
             .order("lecture_no")
             .execute()
@@ -49,8 +52,18 @@ class CloudStudyRepository:
         )
         return {row["question_key"]: row for row in rows}
 
-    def save_result(self, lecture_id, item, is_correct):
-        previous = self.progress(lecture_id).get(item["question_key"], {})
+    def save_result(self, lecture_id, item, is_correct, previous_progress=None):
+        """정답 제출을 채점하고 저장한다.
+
+        `previous_progress`를 넘기면(이미 화면을 그리며 한 번 읽어 둔
+        진행률 딕셔너리) 맞힌/틀린 횟수 계산에 그 값을 그대로 쓰고, 이
+        함수 안에서 또 한 번 전체 진행률을 네트워크로 다시 읽어오지
+        않는다. 문제를 하나 채점할 때마다 왕복이 두 번씩(카운트 조회 +
+        저장) 발생해 채점이 느리게 느껴지던 원인이었다.
+        """
+        if previous_progress is None:
+            previous_progress = self.progress(lecture_id)
+        previous = previous_progress.get(item["question_key"], {})
         correct_count = int(previous.get("correct_count", 0)) + int(is_correct)
         incorrect_count = int(previous.get("incorrect_count", 0)) + int(not is_correct)
         answer = f'{item["correct_choice"]}. {item["answer_text"]}'
