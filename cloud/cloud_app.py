@@ -134,7 +134,7 @@ with quiz_tab:
     items = pages[st.session_state[page_key]]["items"]
     progress = repo.progress(lecture_id)
     filter_label = st.radio(
-        "문제 보기", ["전체", "복습 필요", "오답 기록", "학습 완료"],
+        "문제 보기", ["전체", "미학습", "오답 기록", "학습 완료"],
         horizontal=True, key=f"filter_{lecture_id}",
     )
     visible = []
@@ -142,7 +142,7 @@ with quiz_tab:
         saved = progress.get(item["question_key"], {})
         status = saved.get("review_status", "unseen")
         wrong = int(saved.get("incorrect_count", 0))
-        if filter_label == "복습 필요" and status != "review":
+        if filter_label == "미학습" and status != "unseen":
             continue
         if filter_label == "오답 기록" and wrong == 0:
             continue
