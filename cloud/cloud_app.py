@@ -12,6 +12,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from quiz_utils import extract_review_quiz
+from spaced_repetition import is_due
 from cloud.cloud_backend import CloudStudyRepository
 
 
@@ -185,17 +186,23 @@ with quiz_tab:
         if progress.get(item["question_key"], {}).get("review_status") == "review"
     )
     unseen_count = total_count - mastered_count - review_count
+    due_count = sum(
+        1
+        for item in quiz_items
+        if is_due(progress.get(item["question_key"], {}).get("due_date"))
+    )
 
-    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1, metric2, metric3, metric4, metric5 = st.columns(5)
     metric1.metric("전체", total_count)
-    metric2.metric("미학습", unseen_count)
-    metric3.metric("복습 필요", review_count)
-    metric4.metric("학습 완료", mastered_count)
+    metric2.metric("오늘 복습", due_count)
+    metric3.metric("미학습", unseen_count)
+    metric4.metric("복습 필요", review_count)
+    metric5.metric("학습 완료", mastered_count)
     if total_count:
         st.progress(mastered_count / total_count)
 
     filter_label = st.radio(
-        "문제 보기", ["전체", "미학습", "오답 기록", "학습 완료"],
+        "문제 보기", ["전체", "오늘 복습", "미학습", "오답 기록", "학습 완료"],
         horizontal=True, key=f"filter_{lecture_id}",
     )
 
@@ -215,7 +222,10 @@ with quiz_tab:
             saved = progress.get(item["question_key"])
             status = saved["review_status"] if saved else "unseen"
             incorrect_count = saved["incorrect_count"] if saved else 0
+            due_date = saved["due_date"] if saved else None
 
+            if filter_label == "오늘 복습" and not is_due(due_date):
+                continue
             if filter_label == "미학습" and status != "unseen":
                 continue
             if filter_label == "오답 기록" and incorrect_count < 1:
@@ -224,6 +234,9 @@ with quiz_tab:
                 continue
 
             snapshot_keys.append(item["question_key"])
+
+        if filter_label == "오늘 복습":
+            snapshot_keys.sort(key=lambda key: progress[key]["due_date"])
 
         st.session_state[filter_snapshot_key] = snapshot_keys
         st.session_state[index_state_key] = 0
@@ -250,6 +263,7 @@ with quiz_tab:
         status = saved["review_status"] if saved else "unseen"
         incorrect_count = saved["incorrect_count"] if saved else 0
         correct_count = saved["correct_count"] if saved else 0
+        due_date = saved["due_date"] if saved else None
 
         with st.container(border=True):
             nav_prev, nav_label, nav_next = st.columns([1, 2, 1])
@@ -341,8 +355,10 @@ with quiz_tab:
                 with st.expander("정답 확인", expanded=False):
                     st.success(item.get("answer", ""))
 
+            due_caption = f" · 다음 복습 예정일 {due_date}" if due_date else ""
             st.caption(
                 f"맞힌 횟수 {correct_count}회 · 틀린 횟수 {incorrect_count}회"
+                f"{due_caption}"
             )
 
     with st.expander("이 강의의 복습 기록 초기화", expanded=False):

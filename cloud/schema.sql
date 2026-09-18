@@ -34,9 +34,19 @@ create table if not exists public.medstudy_quiz_progress (
   correct_count integer not null default 0,
   review_status text not null default 'unseen',
   last_result text,
+  repetitions integer not null default 0,
+  ease_factor real not null default 2.5,
+  interval_days integer not null default 0,
+  due_date date,
   updated_at timestamptz not null default now(),
   primary key(lecture_id, question_key)
 );
+
+-- 기존에 만든 테이블에는 이 컬럼들을 추가로 실행하세요(SM-2 간격 반복 스케줄링):
+-- alter table public.medstudy_quiz_progress add column if not exists repetitions integer not null default 0;
+-- alter table public.medstudy_quiz_progress add column if not exists ease_factor real not null default 2.5;
+-- alter table public.medstudy_quiz_progress add column if not exists interval_days integer not null default 0;
+-- alter table public.medstudy_quiz_progress add column if not exists due_date date;
 
 alter table public.medstudy_subjects enable row level security;
 alter table public.medstudy_lectures enable row level security;

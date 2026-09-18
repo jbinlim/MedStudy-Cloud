@@ -14,4 +14,7 @@ dist/
 *.db.backup-*
 *.log
 *.pid
+.drive_sync_worker.lock
+.generation_worker.lock
+.vscode/
 .DS_Store

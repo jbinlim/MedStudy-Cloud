@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from spaced_repetition import compute_next_review
+
 
 class CloudStudyRepository:
     def __init__(self, client, bucket="medstudy"):
@@ -69,6 +71,7 @@ class CloudStudyRepository:
         answer = f'{item["correct_choice"]}. {item["answer_text"]}'
         if item.get("explanation"):
             answer += f' | 해설: {item["explanation"]}'
+        schedule = compute_next_review(previous, is_correct)
         row = {
             "lecture_id": lecture_id,
             "question_key": item["question_key"],
@@ -76,8 +79,12 @@ class CloudStudyRepository:
             "answer": answer,
             "incorrect_count": incorrect_count,
             "correct_count": correct_count,
-            "review_status": "mastered" if is_correct else "review",
+            "review_status": schedule["review_status"],
             "last_result": "correct" if is_correct else "incorrect",
+            "repetitions": schedule["repetitions"],
+            "ease_factor": schedule["ease_factor"],
+            "interval_days": schedule["interval_days"],
+            "due_date": schedule["due_date"],
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         (
