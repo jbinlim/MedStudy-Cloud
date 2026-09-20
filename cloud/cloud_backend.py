@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from spaced_repetition import compute_next_review
 
@@ -32,6 +32,16 @@ class CloudStudyRepository:
             or []
         )
 
+    def all_lectures(self):
+        """과목 구분 없이 모든 강의를 가져온다(전체 복습 큐 화면용)."""
+        return (
+            self.client.table("medstudy_lectures")
+            .select("id,subject_id,lecture_no,title")
+            .execute()
+            .data
+            or []
+        )
+
     def quiz_sets(self, lecture_id):
         return (
             self.client.table("medstudy_quiz_sets")
@@ -53,6 +63,49 @@ class CloudStudyRepository:
             or []
         )
         return {row["question_key"]: row for row in rows}
+
+    def global_review_queue(self, today=None):
+        """모든 과목·강의를 통틀어 오늘 복습할 문제와 오답 기록을 가져온다.
+
+        로컬 앱의 `database.get_global_review_queue`와 같은 기준(오늘
+        마감인 문제 또는 한 번이라도 틀린 문제)으로 클라우드(Supabase)
+        진행률을 모아, 강의·과목 정보를 붙여 돌려준다. 문제 원문(선택지
+        포함)은 각 강의의 정리본에만 있으므로, 실제 문항 재구성은
+        호출하는 쪽에서 question_key로 맞춰본다.
+        """
+        today = (today or date.today()).isoformat()
+
+        rows = (
+            self.client.table("medstudy_quiz_progress")
+            .select("*")
+            .or_(f"due_date.lte.{today},incorrect_count.gte.1")
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return []
+
+        lectures_by_id = {row["id"]: row for row in self.all_lectures()}
+        subjects_by_id = {row["id"]: row["name"] for row in self.subjects()}
+
+        queue_rows = []
+        for row in rows:
+            lecture = lectures_by_id.get(row["lecture_id"])
+            if not lecture:
+                continue
+            queue_rows.append({
+                **row,
+                "lecture_no": lecture["lecture_no"],
+                "lecture_title": lecture["title"],
+                "subject_id": lecture["subject_id"],
+                "subject_name": subjects_by_id.get(lecture["subject_id"], ""),
+            })
+
+        queue_rows.sort(
+            key=lambda row: (row["due_date"] is None, row["due_date"] or "")
+        )
+        return queue_rows
 
     def save_result(self, lecture_id, item, is_correct, previous_progress=None):
         """정답 제출을 채점하고 저장한다.

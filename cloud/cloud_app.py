@@ -88,10 +88,261 @@ def submit_cloud_quiz_answer(repo, lecture_id, item, choice_key, result_key, pro
     }
 
 
+def submit_global_quiz_answer(repo, lecture_id, item, choice_key, result_key):
+    """'오늘의 복습' 화면(여러 강의 통합)에서 쓰는 채점 콜백.
+
+    이 화면은 여러 강의를 넘나들므로, 문제별 강의의 진행률을 미리
+    한 번에 읽어 두지 않는다. `save_result`가 필요하면 알아서 해당
+    강의 진행률을 다시 읽어오므로 문제없다.
+    """
+    is_correct = choice_key == item["correct_choice"]
+    repo.save_result(lecture_id, item, is_correct)
+    st.session_state[result_key] = {
+        "selected_choice": choice_key,
+        "is_correct": is_correct,
+    }
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_cached_global_review_queue(_repo):
+    return _repo.global_review_queue()
+
+
+def load_lecture_quiz_items_by_key(repo, lecture_id):
+    """'오늘의 복습' 화면에서 강의별 문제 본문·선택지를 다시 찾아본다.
+
+    이 화면은 여러 강의를 넘나들며 quiz_progress 행만 먼저 조회하는데,
+    실제 문제 본문·선택지는 각 강의의 퀴즈 세트 안에만 있어 강의별로
+    다시 구성해야 한다.
+    """
+    items = []
+    for row in get_cached_quiz_sets(repo, lecture_id):
+        items.extend(extract_review_quiz(row["content"]))
+    return {item["question_key"]: item for item in items}
+
+
 require_password()
 repo = repository()
 st.title("MedStudy")
 st.caption("정리본 열람과 객관식 복습 전용")
+
+if "cloud_app_view" not in st.session_state:
+    st.session_state["cloud_app_view"] = "lecture"
+
+if st.session_state["cloud_app_view"] == "review":
+    if st.sidebar.button("← 강의 화면으로", use_container_width=True):
+        st.session_state["cloud_app_view"] = "lecture"
+        st.rerun()
+else:
+    if st.sidebar.button(
+        "🔁 오늘의 복습 · 오답 노트", use_container_width=True
+    ):
+        st.session_state["cloud_app_view"] = "review"
+        st.rerun()
+
+# =========================================================
+# 오늘의 복습 · 오답 노트 (모든 과목·강의 통합)
+# =========================================================
+
+if st.session_state["cloud_app_view"] == "review":
+    st.header("오늘의 복습 · 오답 노트")
+    st.caption(
+        "간격 반복(SM-2) 일정상 오늘 복습할 문제와, 과목을 넘나들며 "
+        "한 번이라도 틀린 문제를 한 곳에 모아 보여줍니다."
+    )
+
+    try:
+        progress_rows = get_cached_global_review_queue(repo)
+    except Exception as error:
+        st.error(f"클라우드 데이터에 연결하지 못했습니다: {error}")
+        st.stop()
+
+    if not progress_rows:
+        st.info("오늘 복습할 문제나 오답 기록이 없습니다.")
+        st.stop()
+
+    # 문제 본문·선택지는 각 강의의 퀴즈 세트에만 있으므로, 이 화면에
+    # 등장하는 강의만 한 번씩 불러와 question_key로 다시 찾아 붙인다.
+    lecture_ids = sorted({row["lecture_id"] for row in progress_rows})
+    items_by_lecture = {
+        lid: load_lecture_quiz_items_by_key(repo, lid) for lid in lecture_ids
+    }
+
+    queue_items = []
+    for row in progress_rows:
+        item = items_by_lecture.get(row["lecture_id"], {}).get(
+            row["question_key"]
+        )
+        if not item:
+            # 정리본을 다시 생성해 문제 내용/해시가 바뀐 경우 등은 건너뛴다.
+            continue
+
+        lecture_label = f'{row["lecture_no"]}강'
+        if row["lecture_title"]:
+            lecture_label += f' · {row["lecture_title"]}'
+
+        queue_items.append({
+            **item,
+            "_lecture_id": row["lecture_id"],
+            "_composite_key": f'{row["lecture_id"]}:{row["question_key"]}',
+            "_subject_id": row["subject_id"],
+            "_subject_name": row["subject_name"],
+            "_lecture_label": lecture_label,
+            "_due_date": row["due_date"],
+            "_incorrect_count": row["incorrect_count"],
+            "_correct_count": row["correct_count"],
+        })
+
+    items_by_composite = {
+        item["_composite_key"]: item for item in queue_items
+    }
+    due_keys = [
+        item["_composite_key"] for item in queue_items
+        if is_due(item["_due_date"])
+    ]
+    wrong_keys = [
+        item["_composite_key"] for item in queue_items
+        if item["_incorrect_count"] >= 1
+    ]
+
+    metric1, metric2 = st.columns(2)
+    metric1.metric("오늘 복습 대상", len(due_keys))
+    metric2.metric("오답 기록 있는 문제", len(wrong_keys))
+
+    filter_label = st.radio(
+        "보기",
+        ["오늘 복습", "오답 노트"],
+        horizontal=True,
+        key="cloud_global_review_filter",
+    )
+
+    index_state_key = "cloud_global_review_index"
+    filter_track_key = "cloud_global_review_filter_track"
+    filter_snapshot_key = "cloud_global_review_filter_snapshot"
+
+    if st.session_state.get(filter_track_key) != filter_label:
+        if filter_label == "오늘 복습":
+            snapshot_keys = sorted(
+                due_keys,
+                key=lambda key: items_by_composite[key]["_due_date"],
+            )
+        else:
+            snapshot_keys = wrong_keys
+
+        st.session_state[filter_snapshot_key] = snapshot_keys
+        st.session_state[index_state_key] = 0
+        st.session_state[filter_track_key] = filter_label
+
+    filtered_items = [
+        items_by_composite[key]
+        for key in st.session_state.get(filter_snapshot_key, [])
+        if key in items_by_composite
+    ]
+
+    if not filtered_items:
+        st.info("이 조건에 해당하는 문제가 없습니다.")
+        st.stop()
+
+    current_index = min(
+        st.session_state.get(index_state_key, 0),
+        len(filtered_items) - 1,
+    )
+    st.session_state[index_state_key] = current_index
+    item = filtered_items[current_index]
+    lecture_id = item["_lecture_id"]
+
+    with st.container(border=True):
+        nav_prev, nav_label, nav_next = st.columns([1, 2, 1])
+        with nav_prev:
+            st.button(
+                "◀ 이전 문제",
+                disabled=(current_index == 0),
+                use_container_width=True,
+                key="cloud_global_review_prev",
+                on_click=change_quiz_item_index,
+                args=(index_state_key, -1, len(filtered_items)),
+            )
+        with nav_label:
+            st.markdown(
+                "<p style='text-align:center; margin-top:0.45rem;'>"
+                f"<b>문제 {current_index + 1} / {len(filtered_items)}</b>"
+                "</p>",
+                unsafe_allow_html=True,
+            )
+        with nav_next:
+            st.button(
+                "다음 문제 ▶",
+                disabled=(current_index == len(filtered_items) - 1),
+                use_container_width=True,
+                key="cloud_global_review_next",
+                on_click=change_quiz_item_index,
+                args=(index_state_key, 1, len(filtered_items)),
+            )
+
+        badge_col, open_col = st.columns([4, 1])
+        with badge_col:
+            st.caption(f'{item["_subject_name"]} · {item["_lecture_label"]}')
+        with open_col:
+            if st.button(
+                "강의로 이동",
+                key=f'cloud_go_to_lecture_{item["_composite_key"]}',
+                use_container_width=True,
+            ):
+                st.session_state["cloud_subject_radio"] = item["_subject_id"]
+                st.session_state["cloud_lecture_radio"] = lecture_id
+                st.session_state["cloud_app_view"] = "lecture"
+                st.rerun()
+
+        st.markdown(f'**Q{item["number"]}. {item["question"]}**')
+
+        result_key = f'quiz_result_{lecture_id}_{item["question_key"]}'
+        result = st.session_state.get(result_key)
+
+        if result is None:
+            for choice_key in ("A", "B", "C", "D"):
+                st.button(
+                    f'{choice_key}. {item["choices"][choice_key]}',
+                    use_container_width=True,
+                    key=f'cloud_global_choice_{item["_composite_key"]}_{choice_key}',
+                    on_click=submit_global_quiz_answer,
+                    args=(repo, lecture_id, item, choice_key, result_key),
+                )
+        else:
+            selected_choice = result["selected_choice"]
+            for choice_key in ("A", "B", "C", "D"):
+                choice_text = f'{choice_key}. {item["choices"][choice_key]}'
+                if choice_key == item["correct_choice"]:
+                    st.success(f"✅ {choice_text}")
+                elif choice_key == selected_choice:
+                    st.error(f"❌ {choice_text}")
+                else:
+                    st.write(choice_text)
+
+            if result["is_correct"]:
+                st.success("정답입니다.")
+            else:
+                st.error("오답입니다. 복습 일정을 다시 조정했습니다.")
+
+            if item.get("explanation"):
+                st.caption(f'해설 · {item["explanation"]}')
+
+            if st.button(
+                "다시 풀기",
+                key=f'cloud_global_retry_{item["_composite_key"]}',
+            ):
+                del st.session_state[result_key]
+                st.rerun()
+
+        due_caption = (
+            f' · 다음 복습 예정일 {item["_due_date"]}'
+            if item["_due_date"] else ""
+        )
+        st.caption(
+            f'맞힌 횟수 {item["_correct_count"]}회 · '
+            f'틀린 횟수 {item["_incorrect_count"]}회{due_caption}'
+        )
+
+    st.stop()
 
 try:
     subjects = get_cached_subjects(repo)
@@ -108,6 +359,7 @@ subject_id = st.sidebar.radio(
     "과목",
     list(subject_labels),
     format_func=subject_labels.get,
+    key="cloud_subject_radio",
 )
 lectures = get_cached_lectures(repo, subject_id)
 if not lectures:
@@ -122,6 +374,7 @@ lecture_id = st.sidebar.radio(
     "강의",
     list(lecture_labels),
     format_func=lecture_labels.get,
+    key="cloud_lecture_radio",
 )
 lecture = next(row for row in lectures if row["id"] == lecture_id)
 st.header(lecture_labels[lecture_id])
