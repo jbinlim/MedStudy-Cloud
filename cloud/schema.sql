@@ -48,6 +48,12 @@ create table if not exists public.medstudy_quiz_progress (
 -- alter table public.medstudy_quiz_progress add column if not exists interval_days integer not null default 0;
 -- alter table public.medstudy_quiz_progress add column if not exists due_date date;
 
+-- 위 컬럼들이 생기기 전부터 있던 행(이미 풀었던 문제)은 due_date가
+-- 비어 있어 "오늘 복습" 큐에 전혀 뜨지 않습니다. 아래를 한 번 실행하면
+-- 그런 문제를 지금부터 바로 복습 대상으로 올리고, 이후 채점부터는
+-- SM-2 주기가 정상적으로 굴러갑니다:
+-- update public.medstudy_quiz_progress set due_date = current_date, updated_at = now() where due_date is null;
+
 alter table public.medstudy_subjects enable row level security;
 alter table public.medstudy_lectures enable row level security;
 alter table public.medstudy_quiz_sets enable row level security;

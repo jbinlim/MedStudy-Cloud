@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import random
 import sys
 from pathlib import Path
 
@@ -72,6 +73,18 @@ def change_quiz_item_index(index_state_key, delta, item_count):
     )
 
 
+def quiz_display_status(progress):
+    """화면에 보여줄 학습 완료/복습 필요 상태를 가른다.
+
+    간격 반복(SM-2) 일정(review_status)은 복습 주기를 굴리는 데만 쓰고,
+    화면 표시는 가장 최근 채점 결과(last_result)를 기준으로 한다. 로컬
+    앱(app.py)의 quiz_display_status와 같은 기준을 쓴다.
+    """
+    if not progress:
+        return "unseen"
+    return "mastered" if progress["last_result"] == "correct" else "review"
+
+
 def submit_cloud_quiz_answer(repo, lecture_id, item, choice_key, result_key, progress):
     """선택지 버튼의 on_click 콜백으로 채점까지 한 번에 끝낸다.
 
@@ -129,7 +142,7 @@ st.caption("정리본 열람과 객관식 복습 전용")
 if "cloud_app_view" not in st.session_state:
     st.session_state["cloud_app_view"] = "lecture"
 
-if st.session_state["cloud_app_view"] == "review":
+if st.session_state["cloud_app_view"] in ("review", "range_quiz"):
     if st.sidebar.button("← 강의 화면으로", use_container_width=True):
         st.session_state["cloud_app_view"] = "lecture"
         st.rerun()
@@ -138,6 +151,11 @@ else:
         "🔁 오늘의 복습 · 오답 노트", use_container_width=True
     ):
         st.session_state["cloud_app_view"] = "review"
+        st.rerun()
+    if st.sidebar.button(
+        "🎯 범위 지정 문제 풀이", use_container_width=True
+    ):
+        st.session_state["cloud_app_view"] = "range_quiz"
         st.rerun()
 
 # =========================================================
@@ -222,10 +240,10 @@ if st.session_state["cloud_app_view"] == "review":
 
     if st.session_state.get(filter_track_key) != filter_label:
         if filter_label == "오늘 복습":
-            snapshot_keys = sorted(
-                due_keys,
-                key=lambda key: items_by_composite[key]["_due_date"],
-            )
+            # 과목·강의 순서(=due_date 순)로 고정하면 반복 풀이 시 순서만
+            # 외워서 맞히는 것이 가능해지므로, 매번 섞은 순서로 보여준다.
+            snapshot_keys = list(due_keys)
+            random.shuffle(snapshot_keys)
         else:
             snapshot_keys = wrong_keys
 
@@ -344,6 +362,236 @@ if st.session_state["cloud_app_view"] == "review":
 
     st.stop()
 
+# =========================================================
+# 범위 지정 문제 풀이 (과목 + 강의 범위 선택)
+# =========================================================
+
+RANGE_STATUS_OPTIONS = {
+    "전체": None,
+    "아직 안 푼 문제": "unseen",
+    "복습 필요(마지막에 틀림)": "review",
+    "학습 완료(마지막에 맞힘)": "mastered",
+}
+
+if st.session_state["cloud_app_view"] == "range_quiz":
+    st.header("범위 지정 문제 풀이")
+    st.caption("과목과 강의 범위를 골라 해당 강의의 문제만 모아서 풉니다.")
+
+    try:
+        range_subjects = get_cached_subjects(repo)
+    except Exception as error:
+        st.error(f"클라우드 데이터에 연결하지 못했습니다: {error}")
+        st.stop()
+
+    if not range_subjects:
+        st.info("아직 동기화된 과목이 없습니다.")
+        st.stop()
+
+    range_subject_names = {row["id"]: row["name"] for row in range_subjects}
+    range_subject_id = st.selectbox(
+        "과목",
+        list(range_subject_names),
+        format_func=range_subject_names.get,
+        key="cloud_range_subject",
+    )
+
+    range_lectures = get_cached_lectures(repo, range_subject_id)
+    if not range_lectures:
+        st.info("이 과목에는 강의가 없습니다.")
+        st.stop()
+
+    range_lecture_labels = {}
+    for lecture_row in range_lectures:
+        label = f'{lecture_row["lecture_no"]}강'
+        if lecture_row.get("title"):
+            label += f' · {lecture_row["title"]}'
+        range_lecture_labels[lecture_row["id"]] = label
+    range_lecture_ids = [row["id"] for row in range_lectures]
+
+    from_col, to_col = st.columns(2)
+    with from_col:
+        range_from_id = st.selectbox(
+            "시작 강의",
+            range_lecture_ids,
+            format_func=range_lecture_labels.get,
+            key=f"cloud_range_from_{range_subject_id}",
+        )
+    with to_col:
+        range_to_id = st.selectbox(
+            "끝 강의 (포함)",
+            range_lecture_ids,
+            index=len(range_lecture_ids) - 1,
+            format_func=range_lecture_labels.get,
+            key=f"cloud_range_to_{range_subject_id}",
+        )
+
+    range_status_label = st.radio(
+        "문제 종류",
+        list(RANGE_STATUS_OPTIONS),
+        horizontal=True,
+        key="cloud_range_status",
+    )
+    range_shuffle = st.checkbox(
+        "순서 섞기", value=True, key="cloud_range_shuffle"
+    )
+
+    from_pos = range_lecture_ids.index(range_from_id)
+    to_pos = range_lecture_ids.index(range_to_id)
+    if from_pos > to_pos:
+        st.warning("시작 강의가 끝 강의보다 뒤에 있습니다.")
+
+    if st.button(
+        "문제 풀이 시작",
+        type="primary",
+        disabled=(from_pos > to_pos),
+        key="cloud_range_start",
+    ):
+        wanted_status = RANGE_STATUS_OPTIONS[range_status_label]
+        snapshot_items = []
+        try:
+            for lecture_row in range_lectures[from_pos:to_pos + 1]:
+                lecture_items = load_lecture_quiz_items_by_key(
+                    repo, lecture_row["id"]
+                )
+                lecture_progress = repo.progress(lecture_row["id"])
+                for question_key, quiz_item in lecture_items.items():
+                    status = quiz_display_status(
+                        lecture_progress.get(question_key)
+                    )
+                    if wanted_status and status != wanted_status:
+                        continue
+                    snapshot_items.append({
+                        **quiz_item,
+                        "_lecture_id": lecture_row["id"],
+                        "_composite_key": (
+                            f'{lecture_row["id"]}:{question_key}'
+                        ),
+                        "_lecture_label": range_lecture_labels[
+                            lecture_row["id"]
+                        ],
+                    })
+        except Exception as error:
+            st.error(f"문제를 불러오지 못했습니다: {error}")
+            st.stop()
+
+        if range_shuffle:
+            random.shuffle(snapshot_items)
+
+        for stale in snapshot_items:
+            st.session_state.pop(
+                f'quiz_result_{stale["_lecture_id"]}_{stale["question_key"]}',
+                None,
+            )
+        st.session_state["cloud_range_items"] = snapshot_items
+        st.session_state["cloud_range_title"] = (
+            f'{range_subject_names[range_subject_id]} · '
+            f'{range_lecture_labels[range_from_id]} ~ '
+            f'{range_lecture_labels[range_to_id]}'
+        )
+        st.session_state["cloud_range_index"] = 0
+
+    range_items = st.session_state.get("cloud_range_items")
+    if range_items is None:
+        st.stop()
+
+    st.divider()
+    st.subheader(st.session_state.get("cloud_range_title", ""))
+
+    if not range_items:
+        st.info("조건에 맞는 문제가 없습니다.")
+        st.stop()
+
+    answered = [
+        st.session_state.get(
+            f'quiz_result_{q["_lecture_id"]}_{q["question_key"]}'
+        )
+        for q in range_items
+    ]
+    answered = [r for r in answered if r]
+    st.caption(
+        f"총 {len(range_items)}문제 · 푼 문제 {len(answered)} · "
+        f'정답 {sum(1 for r in answered if r["is_correct"])}'
+    )
+
+    index_state_key = "cloud_range_index"
+    current_index = min(
+        st.session_state.get(index_state_key, 0), len(range_items) - 1
+    )
+    st.session_state[index_state_key] = current_index
+    item = range_items[current_index]
+    lecture_id = item["_lecture_id"]
+
+    with st.container(border=True):
+        nav_prev, nav_label, nav_next = st.columns([1, 2, 1])
+        with nav_prev:
+            st.button(
+                "◀ 이전 문제",
+                disabled=(current_index == 0),
+                use_container_width=True,
+                key="cloud_range_prev",
+                on_click=change_quiz_item_index,
+                args=(index_state_key, -1, len(range_items)),
+            )
+        with nav_label:
+            st.markdown(
+                "<p style='text-align:center; margin-top:0.45rem;'>"
+                f"<b>문제 {current_index + 1} / {len(range_items)}</b>"
+                "</p>",
+                unsafe_allow_html=True,
+            )
+        with nav_next:
+            st.button(
+                "다음 문제 ▶",
+                disabled=(current_index == len(range_items) - 1),
+                use_container_width=True,
+                key="cloud_range_next",
+                on_click=change_quiz_item_index,
+                args=(index_state_key, 1, len(range_items)),
+            )
+
+        st.caption(item["_lecture_label"])
+        st.markdown(f'**Q{item["number"]}. {item["question"]}**')
+
+        result_key = f'quiz_result_{lecture_id}_{item["question_key"]}'
+        result = st.session_state.get(result_key)
+
+        if result is None:
+            for choice_key in ("A", "B", "C", "D"):
+                st.button(
+                    f'{choice_key}. {item["choices"][choice_key]}',
+                    use_container_width=True,
+                    key=f'cloud_range_choice_{item["_composite_key"]}_{choice_key}',
+                    on_click=submit_global_quiz_answer,
+                    args=(repo, lecture_id, item, choice_key, result_key),
+                )
+        else:
+            selected_choice = result["selected_choice"]
+            for choice_key in ("A", "B", "C", "D"):
+                choice_text = f'{choice_key}. {item["choices"][choice_key]}'
+                if choice_key == item["correct_choice"]:
+                    st.success(f"✅ {choice_text}")
+                elif choice_key == selected_choice:
+                    st.error(f"❌ {choice_text}")
+                else:
+                    st.write(choice_text)
+
+            if result["is_correct"]:
+                st.success("정답입니다.")
+            else:
+                st.error("오답입니다. 복습 일정을 다시 조정했습니다.")
+
+            if item.get("explanation"):
+                st.caption(f'해설 · {item["explanation"]}')
+
+            if st.button(
+                "다시 풀기",
+                key=f'cloud_range_retry_{item["_composite_key"]}',
+            ):
+                del st.session_state[result_key]
+                st.rerun()
+
+    st.stop()
+
 try:
     subjects = get_cached_subjects(repo)
 except Exception as error:
@@ -431,12 +679,12 @@ with quiz_tab:
     mastered_count = sum(
         1
         for item in quiz_items
-        if progress.get(item["question_key"], {}).get("review_status") == "mastered"
+        if progress.get(item["question_key"], {}).get("last_result") == "correct"
     )
     review_count = sum(
         1
         for item in quiz_items
-        if progress.get(item["question_key"], {}).get("review_status") == "review"
+        if progress.get(item["question_key"], {}).get("last_result") == "incorrect"
     )
     unseen_count = total_count - mastered_count - review_count
     due_count = sum(
@@ -473,7 +721,7 @@ with quiz_tab:
         snapshot_keys = []
         for item in quiz_items:
             saved = progress.get(item["question_key"])
-            status = saved["review_status"] if saved else "unseen"
+            status = quiz_display_status(saved)
             incorrect_count = saved["incorrect_count"] if saved else 0
             due_date = saved["due_date"] if saved else None
 
@@ -489,7 +737,9 @@ with quiz_tab:
             snapshot_keys.append(item["question_key"])
 
         if filter_label == "오늘 복습":
-            snapshot_keys.sort(key=lambda key: progress[key]["due_date"])
+            # 정리본 순서 그대로 두면 순서만 외워서 맞힐 수 있으므로
+            # 매번 섞은 순서로 보여준다.
+            random.shuffle(snapshot_keys)
 
         st.session_state[filter_snapshot_key] = snapshot_keys
         st.session_state[index_state_key] = 0
@@ -513,7 +763,7 @@ with quiz_tab:
         item = filtered_items[current_index]
 
         saved = progress.get(item["question_key"])
-        status = saved["review_status"] if saved else "unseen"
+        status = quiz_display_status(saved)
         incorrect_count = saved["incorrect_count"] if saved else 0
         correct_count = saved["correct_count"] if saved else 0
         due_date = saved["due_date"] if saved else None
