@@ -109,13 +109,39 @@ ANSWER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CHOICE_PATTERN = re.compile(
-    r"^\s*(?:[-*]\s*)?([A-D])[.)]\s*(.+?)\s*$",
+    r"^\s*(?:[-*]\s*)?([A-E])[.)]\s*(.+?)\s*$",
     re.IGNORECASE,
 )
 EXPLANATION_PATTERN = re.compile(
     r"^\s*(?:[-*]\s*)?(?:\*\*)?해설(?:\*\*)?\s*:\s*(.*)$",
     re.IGNORECASE,
 )
+# 기출이 5지선다인 과목은 복습 문제도 A~E 다섯 개로 만든다.
+CHOICE_KEYS = ("A", "B", "C", "D", "E")
+# `ㄱ. ...`, `ㄴ. ...`처럼 <보기> 진술이 시작되는 지점. 파싱하면 질문이 한
+# 줄로 합쳐지므로, 화면에 그릴 때 이 앞에서 다시 줄을 바꾼다.
+BOGI_ITEM_START = re.compile(r"\s+(?=[ㄱㄴㄷㄹㅁㅂ]\.\s)")
+
+
+def quiz_choice_keys(item):
+    """문항에 실제로 있는 선택지 키를 순서대로(4지선다 A~D, 5지선다 A~E)."""
+    choices = item.get("choices", {})
+    return [key for key in CHOICE_KEYS if key in choices]
+
+
+def is_multiple_choice_item(item):
+    """A부터 빠짐없이 4개 또는 5개의 선택지와 정답 표시가 있는 객관식 문항."""
+    choices = item.get("choices", {})
+    return (
+        len(choices) in (4, 5)
+        and quiz_choice_keys(item) == list(CHOICE_KEYS[:len(choices)])
+        and item.get("correct_choice") in choices
+    )
+
+
+def question_markdown(question):
+    """<보기> 진술(ㄱ. ㄴ. ㄷ.)을 한 줄씩 보이도록 줄바꿈을 넣는다."""
+    return BOGI_ITEM_START.sub("  \n", question)
 
 
 def _clean_markdown_text(text):
@@ -177,6 +203,18 @@ def extract_review_quiz(summary):
         if current is None:
             continue
 
+        # `E. coli ...`처럼 E로 시작하는 질문·해설 줄을 선택지로 오인하지
+        # 않도록, E는 A~D가 다 나온 뒤 정답 줄 전에만 선택지로 받는다.
+        if (
+            choice_match
+            and choice_match.group(1).upper() == "E"
+            and (
+                current["answer"]
+                or len(current["choices"]) != 4
+            )
+        ):
+            choice_match = None
+
         if choice_match:
             choice_key = choice_match.group(1).upper()
             current["choices"][choice_key] = _clean_markdown_text(
@@ -185,7 +223,7 @@ def extract_review_quiz(summary):
         elif answer_match:
             answer = _clean_markdown_text(answer_match.group(1))
             current["answer"] = answer
-            answer_choice = re.match(r"^([A-D])(?:[.)\s]|$)", answer, re.I)
+            answer_choice = re.match(r"^([A-E])(?:[.)\s]|$)", answer, re.I)
             if answer_choice:
                 current["correct_choice"] = answer_choice.group(1).upper()
         elif explanation_match:

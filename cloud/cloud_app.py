@@ -12,7 +12,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from quiz_utils import extract_review_quiz
+from quiz_utils import (
+    extract_review_quiz,
+    is_multiple_choice_item,
+    question_markdown,
+    quiz_choice_keys,
+)
 from spaced_repetition import is_due
 from cloud.cloud_backend import CloudStudyRepository
 
@@ -311,13 +316,13 @@ if st.session_state["cloud_app_view"] == "review":
                 st.session_state["cloud_app_view"] = "lecture"
                 st.rerun()
 
-        st.markdown(f'**Q{item["number"]}. {item["question"]}**')
+        st.markdown(f'**Q{item["number"]}. {question_markdown(item["question"])}**')
 
         result_key = f'quiz_result_{lecture_id}_{item["question_key"]}'
         result = st.session_state.get(result_key)
 
         if result is None:
-            for choice_key in ("A", "B", "C", "D"):
+            for choice_key in quiz_choice_keys(item):
                 st.button(
                     f'{choice_key}. {item["choices"][choice_key]}',
                     use_container_width=True,
@@ -327,7 +332,7 @@ if st.session_state["cloud_app_view"] == "review":
                 )
         else:
             selected_choice = result["selected_choice"]
-            for choice_key in ("A", "B", "C", "D"):
+            for choice_key in quiz_choice_keys(item):
                 choice_text = f'{choice_key}. {item["choices"][choice_key]}'
                 if choice_key == item["correct_choice"]:
                     st.success(f"✅ {choice_text}")
@@ -550,13 +555,13 @@ if st.session_state["cloud_app_view"] == "range_quiz":
             )
 
         st.caption(item["_lecture_label"])
-        st.markdown(f'**Q{item["number"]}. {item["question"]}**')
+        st.markdown(f'**Q{item["number"]}. {question_markdown(item["question"])}**')
 
         result_key = f'quiz_result_{lecture_id}_{item["question_key"]}'
         result = st.session_state.get(result_key)
 
         if result is None:
-            for choice_key in ("A", "B", "C", "D"):
+            for choice_key in quiz_choice_keys(item):
                 st.button(
                     f'{choice_key}. {item["choices"][choice_key]}',
                     use_container_width=True,
@@ -566,7 +571,7 @@ if st.session_state["cloud_app_view"] == "range_quiz":
                 )
         else:
             selected_choice = result["selected_choice"]
-            for choice_key in ("A", "B", "C", "D"):
+            for choice_key in quiz_choice_keys(item):
                 choice_text = f'{choice_key}. {item["choices"][choice_key]}'
                 if choice_key == item["correct_choice"]:
                     st.success(f"✅ {choice_text}")
@@ -799,14 +804,15 @@ with quiz_tab:
             question_col, status_col = st.columns([5, 1])
             with question_col:
                 label_prefix = f'[{item["_source_label"]}] ' if len(pages) > 1 else ""
-                st.markdown(f'**{label_prefix}Q{item["number"]}. {item["question"]}**')
+                st.markdown(
+                    f'**{label_prefix}Q{item["number"]}. '
+                    f'{question_markdown(item["question"])}**'
+                )
             with status_col:
                 st.caption(status_labels[status])
 
             choices = item.get("choices", {})
-            has_multiple_choices = (
-                len(choices) == 4 and item.get("correct_choice") in choices
-            )
+            has_multiple_choices = is_multiple_choice_item(item)
 
             if has_multiple_choices:
                 result_key = f'quiz_result_{lecture_id}_{item["question_key"]}'
@@ -818,7 +824,7 @@ with quiz_tab:
                     # "정답 제출" 버튼을 또 누르는 방식보다 한 단계
                     # 적고, on_click 콜백이 재실행 전에 채점을 끝내
                     # st.rerun()을 따로 부르지 않아도 된다).
-                    for choice_key in ("A", "B", "C", "D"):
+                    for choice_key in quiz_choice_keys(item):
                         st.button(
                             f'{choice_key}. {choices[choice_key]}',
                             use_container_width=True,
@@ -828,7 +834,7 @@ with quiz_tab:
                         )
                 else:
                     selected_choice = result["selected_choice"]
-                    for choice_key in ("A", "B", "C", "D"):
+                    for choice_key in quiz_choice_keys(item):
                         choice_text = f'{choice_key}. {choices[choice_key]}'
                         if choice_key == item["correct_choice"]:
                             st.success(f"✅ {choice_text}")
